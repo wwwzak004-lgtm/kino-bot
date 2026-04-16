@@ -7,9 +7,10 @@ const Movie = require('./models/Movie');
 const Channel = require('./models/Channel');
 const JoinRequest = require('./models/JoinRequest');
 const Setting = require('./models/Setting');
+const Admin = require('./models/Admin');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const ADMIN_ID = parseInt(process.env.ADMIN_ID);
+const OWNER_ID = parseInt(process.env.ADMIN_ID); // Ega (Main Admin)
 
 // 1. Database Connection
 mongoose.connect(process.env.MONGO_URI)
@@ -26,10 +27,16 @@ app.listen(process.env.PORT || 3000, () => {
     console.log(`Server ${process.env.PORT || 3000}-portda ishlamoqda`);
 });
 
-// 3. Middlewares
+// 3. Middlewares & Helpers
+const isAdmin = async (userId) => {
+    if (userId === OWNER_ID) return true;
+    const admin = await Admin.findOne({ telegramId: userId });
+    return !!admin;
+};
+
 const checkSubscription = async (ctx, next) => {
     try {
-        if (ctx.from.id === ADMIN_ID) return next();
+        if (await isAdmin(ctx.from.id)) return next();
 
         const channels = await Channel.find();
         if (channels.length === 0) return next();
@@ -43,11 +50,8 @@ const checkSubscription = async (ctx, next) => {
                 const isMember = ['member', 'administrator', 'creator', 'restricted'].includes(member.status);
                 
                 if (!isMember) {
-                    // Check if they have a pending join request
                     const pending = await JoinRequest.findOne({ userId: ctx.from.id, chatId: channel.chatId });
-                    if (!pending) {
-                        unsubscribed.push(channel);
-                    }
+                    if (!pending) unsubscribed.push(channel);
                 }
             } catch (error) {
                 console.error(`Kanal tekshirishda xato (${channel.chatId}):`, error.message);
@@ -69,7 +73,6 @@ const checkSubscription = async (ctx, next) => {
     }
 };
 
-// 4. Admin Helpers
 const getStats = async () => {
     const total = await User.countDocuments();
     const active = await User.countDocuments({ status: 'active' });
@@ -99,7 +102,7 @@ const parseButtons = (text) => {
     return buttons.length > 0 ? Markup.inlineKeyboard(buttons, { columns: 1 }) : null;
 };
 
-// 5. Bot Commands/Events
+// 4. Bot Commands/Events
 bot.start(async (ctx) => {
     const { id, first_name, username } = ctx.from;
     try {
@@ -114,19 +117,15 @@ bot.start(async (ctx) => {
     }
 });
 
-// Handle Chat Join Request (Track "zayafkas")
 bot.on('chat_join_request', async (ctx) => {
     try {
         const { from, chat } = ctx.chatJoinRequest;
         await JoinRequest.findOneAndUpdate(
             { userId: from.id, chatId: chat.id.toString() },
             { requestedAt: new Date() },
-            { upsert: true }
+            { upsert: true, returnDocument: 'after' }
         );
-        console.log(`Join request recorded for User: ${from.id} in Chat: ${chat.id}`);
-    } catch (e) {
-        console.error('Chat Join Request recording error:', e);
-    }
+    } catch (e) {}
 });
 
 bot.action('check_sub', async (ctx) => {
@@ -138,71 +137,83 @@ bot.action('check_sub', async (ctx) => {
                 if (channel.type === 'external') continue;
                 const member = await ctx.telegram.getChatMember(channel.chatId, ctx.from.id);
                 const isMember = ['member', 'administrator', 'creator', 'restricted'].includes(member.status);
-                
                 if (!isMember) {
                     const pending = await JoinRequest.findOne({ userId: ctx.from.id, chatId: channel.chatId });
                     if (!pending) unsubscribed.push(channel);
                 }
             } catch (e) {}
         }
-
         if (unsubscribed.length === 0) {
             await ctx.answerCbQuery('Rahmat! Endi botdan foydalanishingiz mumkin.');
             await ctx.editMessageText('Obuna tasdiqlandi. Kino kodini yuboring.');
         } else {
             await ctx.answerCbQuery('Hali barcha kanallarga obuna bo\'lmagansiz!', { show_alert: true });
         }
-    } catch (e) {
-        console.error('Action check_sub error:', e);
-    }
+    } catch (e) {}
 });
 
-// Admin Panel
+// Admin Panel Main Command
 bot.command('admin', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+    if (!(await isAdmin(ctx.from.id))) return;
     
-    ctx.reply('Admin paneliga xush kelibsiz:', Markup.keyboard([
+    const buttons = [
         ['📊 Statistika', '📢 Xabar yuborish'],
         ['🎬 Kino qo\'shish', '🎬 Kino tahrirlash'],
         ['📢 Kanal sozalamalari', '📽 Kino kanal linki'],
         ['🏠 Asosiy menyu']
-    ]).resize());
+    ];
+    
+    // Faqat EGAGA ko'rinadigan tugma
+    if (ctx.from.id === OWNER_ID) {
+        buttons.splice(3, 0, ['👥 Adminlar boshqaruvi']);
+    }
+    
+    ctx.reply('Admin paneliga xush kelibsiz:', Markup.keyboard(buttons).resize());
 });
 
 bot.hears('📊 Statistika', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+    if (!(await isAdmin(ctx.from.id))) return;
     const stats = await getStats();
     ctx.replyWithMarkdown(stats);
 });
 
-bot.hears('🎬 Kino qo\'shish', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+bot.hears('🎬 Kino qo\'shish', async (ctx) => {
+    if (!(await isAdmin(ctx.from.id))) return;
     adminState[ctx.from.id] = { step: 'waiting_movie' };
     ctx.reply('Kino faylini (yoki videoni) yuboring:');
 });
 
-bot.hears('🎬 Kino tahrirlash', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+bot.hears('🎬 Kino tahrirlash', async (ctx) => {
+    if (!(await isAdmin(ctx.from.id))) return;
     adminState[ctx.from.id] = { step: 'waiting_edit_code' };
     ctx.reply('Tahrirlamoqchi bo\'lgan kino kodini yuboring:');
 });
 
-bot.hears('📢 Kanal sozalamalari', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+bot.hears('📢 Kanal sozalamalari', async (ctx) => {
+    if (!(await isAdmin(ctx.from.id))) return;
     ctx.reply('Kanal boshqaruvi:', Markup.inlineKeyboard([
         [Markup.button.callback('➕ Kanal qo\'shish', 'add_channel')],
         [Markup.button.callback('❌ Kanalni o\'chirish', 'del_channel')]
     ]));
 });
 
-bot.hears('📽 Kino kanal linki', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+bot.hears('📽 Kino kanal linki', async (ctx) => {
+    if (!(await isAdmin(ctx.from.id))) return;
     adminState[ctx.from.id] = { step: 'waiting_setting_link' };
     ctx.reply('Barcha kino kodlari jamlangan kanal linkini yuboring (https://...):');
 });
 
-bot.hears('📢 Xabar yuborish', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+bot.hears('👥 Adminlar boshqaruvi', async (ctx) => {
+    if (ctx.from.id !== OWNER_ID) return;
+    ctx.reply('Adminlarni boshqarish:', Markup.inlineKeyboard([
+        [Markup.button.callback('➕ Admin qo\'shish', 'add_admin')],
+        [Markup.button.callback('❌ Admin o\'chirish', 'del_admin')],
+        [Markup.button.callback('📜 Adminlar ro\'yxati', 'list_admins')]
+    ]));
+});
+
+bot.hears('📢 Xabar yuborish', async (ctx) => {
+    if (!(await isAdmin(ctx.from.id))) return;
     adminState[ctx.from.id] = { step: 'waiting_broadcast' };
     ctx.reply('Foydalanuvchilarga yubormoqchi bo\'lgan xabaringizni yozing:');
 });
@@ -212,14 +223,14 @@ bot.hears('🏠 Asosiy menyu', (ctx) => {
 });
 
 // Admin Callbacks
-bot.action('add_channel', (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+bot.action('add_channel', async (ctx) => {
+    if (!(await isAdmin(ctx.from.id))) return;
     adminState[ctx.from.id] = { step: 'adding_channel_id' };
-    ctx.reply('Kanal ID sini yuboring (masalan: @kanal_yoki_id yoki -100...):');
+    ctx.reply('Kanal ID sini yuboring (@kanal yoki -100...):');
 });
 
 bot.action('del_channel', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+    if (!(await isAdmin(ctx.from.id))) return;
     const channels = await Channel.find();
     if (channels.length === 0) return ctx.reply('Ulangan kanallar yo\'q.');
     const buttons = channels.map(ch => [Markup.button.callback(`❌ ${ch.chatId}`, `del_${ch._id}`)]);
@@ -227,113 +238,129 @@ bot.action('del_channel', async (ctx) => {
 });
 
 bot.action(/^del_(.+)$/, async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return;
+    if (!(await isAdmin(ctx.from.id))) return;
     try {
         await Channel.findByIdAndDelete(ctx.match[1]);
         ctx.answerCbQuery('Kanal o\'chirildi');
         ctx.editMessageText('Kanal muvaffaqiyatli olib tashlandi.');
-    } catch (e) {
-        ctx.answerCbQuery('Xatolik yuz berdi');
-    }
+    } catch (e) { ctx.answerCbQuery('Xatolik yuz berdi'); }
+});
+
+// Admin Management Callbacks (OWNER ONLY)
+bot.action('add_admin', (ctx) => {
+    if (ctx.from.id !== OWNER_ID) return;
+    adminState[ctx.from.id] = { step: 'adding_admin_id' };
+    ctx.reply('Yangi adminning Telegram ID sini yuboring:');
+});
+
+bot.action('list_admins', async (ctx) => {
+    if (ctx.from.id !== OWNER_ID) return;
+    const admins = await Admin.find();
+    if (admins.length === 0) return ctx.reply('Qo\'shimcha adminlar yo\'q.');
+    let text = '📜 *Adminlar ro\'yxati:*\n\n';
+    admins.forEach((adm, i) => {
+        text += `${i+1}. ID: \`${adm.telegramId}\`\n`;
+    });
+    ctx.replyWithMarkdown(text);
+});
+
+bot.action('del_admin', async (ctx) => {
+    if (ctx.from.id !== OWNER_ID) return;
+    const admins = await Admin.find();
+    if (admins.length === 0) return ctx.reply('O\'chirish uchun adminlar yo\'q.');
+    const buttons = admins.map(adm => [Markup.button.callback(`❌ ${adm.telegramId}`, `unadmin_${adm._id}`)]);
+    ctx.reply('O\'chirmoqchi bo\'lgan adminni tanlang:', Markup.inlineKeyboard(buttons));
+});
+
+bot.action(/^unadmin_(.+)$/, async (ctx) => {
+    if (ctx.from.id !== OWNER_ID) return;
+    await Admin.findByIdAndDelete(ctx.match[1]);
+    ctx.answerCbQuery('Admin o\'chirildi');
+    ctx.editMessageText('Admin muvaffaqiyatli olib tashlandi.');
 });
 
 // Centralized State & Message Handler
 let adminState = {};
-
 bot.on('message', async (ctx, next) => {
     const userId = ctx.from.id;
+    const isUserAdmin = await isAdmin(userId);
     const state = adminState[userId];
 
-    if (userId === ADMIN_ID && state) {
-        // 1. Channel Adding Flow
+    if (isUserAdmin && state) {
+        // Owner only flows
+        if (userId === OWNER_ID) {
+            if (state.step === 'adding_admin_id' && ctx.message.text) {
+                const targetId = parseInt(ctx.message.text);
+                if (isNaN(targetId)) return ctx.reply('ID faqat raqamlardan iborat bo\'lishi kerak.');
+                try {
+                    await new Admin({ telegramId: targetId }).save();
+                    delete adminState[userId];
+                    return ctx.reply(`✅ Foydalanuvchi (${targetId}) admin qilib tayinlandi!`);
+                } catch (e) { return ctx.reply('❌ Bu ID allaqachon admin yoki xato yuz berdi.'); }
+            }
+        }
+
+        // All admins flows
         if (state.step === 'adding_channel_id') {
             state.chatId = ctx.message.text;
             state.step = 'adding_channel_link';
-            return ctx.reply('Kanal linkini yuboring (https://...):');
+            return ctx.reply('Kanal linkini yuboring:');
         }
         if (state.step === 'adding_channel_link') {
             state.inviteLink = ctx.message.text;
             state.step = 'adding_channel_name';
-            return ctx.reply('Kanal xabarda ko\'rinadigan nomini yuboring:');
+            return ctx.reply('Kanal nomini yuboring:');
         }
         if (state.step === 'adding_channel_name') {
-            try {
-                await new Channel({ 
-                    chatId: state.chatId, 
-                    inviteLink: state.inviteLink, 
-                    name: ctx.message.text 
-                }).save();
-                delete adminState[userId];
-                return ctx.reply('✅ Kanal muvaffaqiyatli qo\'shildi!');
-            } catch (e) {
-                return ctx.reply('❌ Kanalni saqlashda xato yuz berdi.');
-            }
+            await new Channel({ chatId: state.chatId, inviteLink: state.inviteLink, name: ctx.message.text }).save();
+            delete adminState[userId];
+            return ctx.reply('✅ Kanal qo\'shildi!');
         }
 
-        // 2. Movie Adding Flow
         if (state.step === 'waiting_movie' && (ctx.message.video || ctx.message.document || ctx.message.photo)) {
-            let fileId;
-            if (ctx.message.video) fileId = ctx.message.video.file_id;
-            else if (ctx.message.document) fileId = ctx.message.document.file_id;
-            else fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-
-            state.fileId = fileId;
+            const fId = ctx.message.video ? ctx.message.video.file_id : (ctx.message.document ? ctx.message.document.file_id : ctx.message.photo[ctx.message.photo.length-1].file_id);
+            state.fileId = fId;
             state.caption = ctx.message.caption || '';
             state.step = 'waiting_code';
-            return ctx.reply('Endi ushbu kino uchun kod kiriting:');
+            return ctx.reply('Kino uchun kod kiriting:');
         }
         if (state.step === 'waiting_code' && ctx.message.text) {
-            const code = ctx.message.text;
             try {
-                await new Movie({ code, fileId: state.fileId, caption: state.caption }).save();
+                await new Movie({ code: ctx.message.text, fileId: state.fileId, caption: state.caption }).save();
                 delete adminState[userId];
-                return ctx.reply(`✅ Muvaffaqiyatli saqlandi! Kod: ${code}`);
-            } catch (e) {
-                return ctx.reply('❌ Bu kod band yoki xato yuz berdi.');
-            }
+                return ctx.reply('✅ Kino saqlandi!');
+            } catch (e) { return ctx.reply('❌ Kod band yoki xato.'); }
         }
 
-        // 3. Movie Editing Flow
         if (state.step === 'waiting_edit_code' && ctx.message.text) {
             const movie = await Movie.findOne({ code: ctx.message.text });
-            if (!movie) return ctx.reply('❌ Bunday kodli kino topilmadi.');
+            if (!movie) return ctx.reply('❌ Topilmadi.');
             state.editCode = ctx.message.text;
             state.step = 'waiting_new_file';
-            return ctx.reply('Endi yangi kino faylini (video/dokumment) yuboring:');
+            return ctx.reply('Yangi faylni yuboring:');
         }
         if (state.step === 'waiting_new_file' && (ctx.message.video || ctx.message.document || ctx.message.photo)) {
-            let fileId;
-            if (ctx.message.video) fileId = ctx.message.video.file_id;
-            else if (ctx.message.document) fileId = ctx.message.document.file_id;
-            else fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-
-            await Movie.updateOne({ code: state.editCode }, { fileId, caption: ctx.message.caption || '' });
+            const fId = ctx.message.video ? ctx.message.video.file_id : (ctx.message.document ? ctx.message.document.file_id : ctx.message.photo[ctx.message.photo.length-1].file_id);
+            await Movie.updateOne({ code: state.editCode }, { fileId: fId, caption: ctx.message.caption || '' });
             delete adminState[userId];
-            return ctx.reply('✅ Kino muvaffaqiyatli yangilandi!');
+            return ctx.reply('✅ Yangilandi!');
         }
 
-        // 4. Setting Link Flow
         if (state.step === 'waiting_setting_link' && ctx.message.text) {
-            await Setting.findOneAndUpdate(
-                { key: 'movieChannelLink' },
-                { value: ctx.message.text },
-                { upsert: true }
-            );
+            await Setting.findOneAndUpdate({ key: 'movieChannelLink' }, { value: ctx.message.text }, { upsert: true });
             delete adminState[userId];
-            return ctx.reply('✅ Kino kanal linki muvaffaqiyatli saqlandi!');
+            return ctx.reply('✅ Link saqlandi!');
         }
 
-        // 5. Broadcast Flow
         if (state.step === 'waiting_broadcast') {
             state.broadcastMsg = ctx.message;
             state.step = 'asking_buttons';
-            return ctx.reply('Xabarga tugmalar qo\'shilsinmi?\nFormat: `Nomi | Link` (Har bir tugma yangi qatordan)\nAgarda tugma kerak bo\'lmasa "Yo\'q" deb yozing.', { parse_mode: 'Markdown' });
+            return ctx.reply('Tugmalar format: `Nomi | Link` yoki "Yo\'q":');
         }
         if (state.step === 'asking_buttons' && ctx.message.text) {
             const keyboard = parseButtons(ctx.message.text);
             const users = await User.find();
-            ctx.reply(`🚀 Tarqatish boshlandi... Jami: ${users.length} foydalanuvchi.`);
-
+            ctx.reply(`🚀 Yuborilmoqda...`);
             let sent = 0, blocked = 0;
             for (const user of users) {
                 try {
@@ -346,37 +373,29 @@ bot.on('message', async (ctx, next) => {
                 await new Promise(r => setTimeout(r, 50)); 
             }
             delete adminState[userId];
-            return ctx.reply(`✅ Tayyor!\n📤 Yuborildi: ${sent}\n🚫 Bloklanganlar: ${blocked}`);
+            return ctx.reply(`✅ Yakunlandi.\nYuborildi: ${sent}\nBlok: ${blocked}`);
         }
     }
-
     return next();
 }, checkSubscription, async (ctx) => {
     if (ctx.message && ctx.message.text) {
         const text = ctx.message.text;
         if (text.startsWith('/')) return;
-
         const movie = await Movie.findOne({ code: text });
         if (movie) {
-            try {
-                await ctx.replyWithVideo(movie.fileId, { caption: movie.caption });
-            } catch (e) {
+            try { await ctx.replyWithVideo(movie.fileId, { caption: movie.caption }); }
+            catch (e) {
                 try { await ctx.replyWithDocument(movie.fileId, { caption: movie.caption }); }
-                catch (e2) { await ctx.reply('Kino faylini yuborishda xato yuz berdi.'); }
+                catch (e2) { ctx.reply('Fayl yuborishda xato.'); }
             }
         } else {
             const setting = await Setting.findOne({ key: 'movieChannelLink' });
-            const link = setting ? setting.value : 'Hozircha link yo\'q';
-            ctx.reply(`❌ Kino topilmadi.\n\n🎥 Bizning barcha kino kodlarimiz bu yerda:\n${link}`);
+            ctx.reply(`❌ Topilmadi.\n\n🎥 Kodlar kanali:\n${setting ? setting.value : 'Yo\'q'}`);
         }
     }
 });
 
-bot.catch((err, ctx) => {
-    console.error(`Bot Error (${ctx.updateType}):`, err);
-});
-
-bot.launch().then(() => console.log('Bot muvaffaqiyatli ishga tushdi...'));
-
+bot.catch((err, ctx) => console.error(`Error:`, err));
+bot.launch().then(() => console.log('Bot ishga tushdi...'));
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
