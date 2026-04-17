@@ -411,6 +411,13 @@ bot.on('message', async (ctx, next) => {
         }
     }
 });
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('⚠️ Tutilmagan xatolik (Unhandled Rejection):', reason);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('⚠️ Jiddiy xatolik (Uncaught Exception):', err);
+});
 
 bot.catch((err, ctx) => console.error(`Error:`, err));
 bot.launch().then(() => console.log('Bot ishga tushdi...'));
