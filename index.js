@@ -377,20 +377,37 @@ bot.on('message', async (ctx, next) => {
         }
     }
     return next();
+// Kodingizning eng oxiridagi qismni quyidagiga almashtiring:
 }, checkSubscription, async (ctx) => {
     if (ctx.message && ctx.message.text) {
         const text = ctx.message.text;
         if (text.startsWith('/')) return;
+        
         const movie = await Movie.findOne({ code: text });
-        if (movie) {
-            try { await ctx.replyWithVideo(movie.fileId, { caption: movie.caption }); }
-            catch (e) {
-                try { await ctx.replyWithDocument(movie.fileId, { caption: movie.caption }); }
-                catch (e2) { ctx.reply('Fayl yuborishda xato.'); }
+        
+        try { // <--- Shu yerda try-catch boshlanadi
+            if (movie) {
+                try { 
+                    await ctx.replyWithVideo(movie.fileId, { caption: movie.caption }); 
+                } catch (e) {
+                    try { 
+                        await ctx.replyWithDocument(movie.fileId, { caption: movie.caption }); 
+                    } catch (e2) { 
+                        await ctx.reply('Fayl yuborishda xato.'); 
+                    }
+                }
+            } else {
+                const setting = await Setting.findOne({ key: 'movieChannelLink' });
+                await ctx.reply(`❌ Topilmadi.\n\n🎥 Kodlar kanali:\n${setting ? setting.value : 'Yo\'q'}`);
             }
-        } else {
-            const setting = await Setting.findOne({ key: 'movieChannelLink' });
-            ctx.reply(`❌ Topilmadi.\n\n🎥 Kodlar kanali:\n${setting ? setting.value : 'Yo\'q'}`);
+        } catch (error) { // <--- Foydalanuvchi bloklagan bo'lsa, xato shu yerda tutiladi
+            if (error.response && error.response.error_code === 403) {
+                console.log(`Foydalanuvchi ${ctx.from.id} botni bloklagan.`);
+                // Bazada statusni yangilab qo'yish ham foydali
+                await User.updateOne({ telegramId: ctx.from.id }, { status: 'blocked' });
+            } else {
+                console.error("Xabar yuborishda kutilmagan xato:", error);
+            }
         }
     }
 });
